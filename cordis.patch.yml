@@ -8,5 +8,5 @@
 
 - insert:
     - id: dsh-codex-auth
-      name: 'dsh-codex-auth'
+      name: '@sunshaobei/dsh-codex-auth'
       config: {}
