@@ -1,0 +1,12 @@
+# dsh-codex-auth bundle patch: mounts the Codex 订阅 authorization page into
+# a dsh profile. Applied as a profile layer when this package is installed
+# with `dsh plugin --profile desktop add <source>`.
+#
+# Config is intentionally empty today — the plugin's OAuth constants mirror
+# @earendil-works/pi-ai's openai-codex adapter and the credential record it
+# manages (llm-pi-ai/openai-codex) is owned by dsh-llm-pi-ai.
+
+- insert:
+    - id: dsh-codex-auth
+      name: 'dsh-codex-auth'
+      config: {}

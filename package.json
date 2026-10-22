@@ -1,0 +1,53 @@
+{
+  "name": "dsh-codex-auth",
+  "description": "Codex 订阅授权管理 for the dsh web surface: a dedicated settings page (authorization status, validity/expiry, one-click browser OAuth) plus an expired-credential modal when a GPT model is selected. Host half runs the full OpenAI OAuth flow (PKCE S256, localhost:1455 callback) and writes the llm-pi-ai/openai-codex grant record through ctx.credentials.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "react": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-cordis-client-runner"
+      ],
+      "immediately": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "codex",
+    "oauth",
+    "chatgpt"
+  ],
+  "license": "MIT"
+}
