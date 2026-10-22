@@ -1,7 +1,7 @@
 {
   "name": "@sunshaobei/dsh-codex-auth",
   "description": "Codex 订阅授权管理 for the dsh web surface: a dedicated settings page (authorization status, validity/expiry, one-click browser OAuth) plus an expired-credential modal when a GPT model is selected. Host half runs the full OpenAI OAuth flow (PKCE S256, localhost:1455 callback) and writes the llm-pi-ai/openai-codex grant record through ctx.credentials.",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
