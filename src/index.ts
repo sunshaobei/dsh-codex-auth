@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * dsh-codex-auth — Codex 订阅授权管理 for the dsh web surface.
  *
@@ -29,11 +30,10 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { proxyFetch } from './proxy-fetch.mjs';
 import z from './vendor/schemastery.mjs';
-
 const RPC_CHANNEL = '/dsh-codex-auth';
 const CRED_KEY = 'llm-pi-ai/openai-codex';
-
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTH_BASE = 'https://auth.openai.com';
 const AUTHORIZE_URL = `${AUTH_BASE}/oauth/authorize`;
@@ -41,90 +41,80 @@ const TOKEN_URL = `${AUTH_BASE}/oauth/token`;
 const REDIRECT_URI = 'http://localhost:1455/auth/callback';
 const SCOPE = 'openid profile email offline_access';
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
-
 export const name = 'codex-auth';
 export const inject = ['connection', 'credentials', 'webServer', 'llm', 'settings'];
-
 export const Config = z.object({}).i18n({});
-
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-function b64urlToJson(segment: string): any {
-	try {
-		const json = Buffer.from(segment.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
-		return JSON.parse(json);
-	} catch {
-		return undefined;
-	}
+function b64urlToJson(segment) {
+    try {
+        const json = Buffer.from(segment.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+        return JSON.parse(json);
+    }
+    catch {
+        return undefined;
+    }
 }
-
-function decodeJwtPayload(accessToken: string): any {
-	const parts = String(accessToken || '').split('.');
-	return parts.length >= 2 ? b64urlToJson(parts[1]) : undefined;
+function decodeJwtPayload(accessToken) {
+    const parts = String(accessToken || '').split('.');
+    return parts.length >= 2 ? b64urlToJson(parts[1]) : undefined;
 }
-
 /** Best-effort status read; never throws for the UI. */
-async function readStatus(credentials: any) {
-	try {
-		const record = await credentials.readRecord(CRED_KEY);
-		const payload: any = record && record.kind === 'grant' ? record.payload : undefined;
-		if (!payload || payload.type !== 'oauth' || !payload.access) {
-			return { configured: false as const };
-		}
-		const expires = typeof payload.expires === 'number' ? payload.expires : 0;
-		const claims = decodeJwtPayload(payload.access) ?? {};
-		const auth = claims['https://api.openai.com/auth'] ?? {};
-		const profile = claims['https://api.openai.com/profile'] ?? {};
-		return {
-			configured: true as const,
-			expires,
-			expired: expires > 0 && expires <= Date.now(),
-			msLeft: expires > 0 ? expires - Date.now() : 0,
-			accountId: typeof payload.accountId === 'string' ? payload.accountId : (auth.chatgpt_account_id ?? undefined),
-			plan: auth.chatgpt_plan_type ?? undefined,
-			email: profile.email ?? undefined,
-		};
-	} catch (error) {
-		return { configured: false as const, error: String(error) };
-	}
+async function readStatus(credentials) {
+    try {
+        const record = await credentials.readRecord(CRED_KEY);
+        const payload = record && record.kind === 'grant' ? record.payload : undefined;
+        if (!payload || payload.type !== 'oauth' || !payload.access) {
+            return { configured: false };
+        }
+        const expires = typeof payload.expires === 'number' ? payload.expires : 0;
+        const claims = decodeJwtPayload(payload.access) ?? {};
+        const auth = claims['https://api.openai.com/auth'] ?? {};
+        const profile = claims['https://api.openai.com/profile'] ?? {};
+        return {
+            configured: true,
+            expires,
+            expired: expires > 0 && expires <= Date.now(),
+            msLeft: expires > 0 ? expires - Date.now() : 0,
+            accountId: typeof payload.accountId === 'string' ? payload.accountId : (auth.chatgpt_account_id ?? undefined),
+            plan: auth.chatgpt_plan_type ?? undefined,
+            email: profile.email ?? undefined,
+        };
+    }
+    catch (error) {
+        return { configured: false, error: String(error) };
+    }
 }
-
 function pkcePair() {
-	const verifier = crypto.randomBytes(32).toString('base64url');
-	const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
-	return { verifier, challenge };
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    return { verifier, challenge };
 }
-
-function openBrowser(url: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32' : 'xdg-open';
-		const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url];
-		execFile(command, args, (error) => error ? reject(error) : resolve());
-	});
+function openBrowser(url) {
+    return new Promise((resolve, reject) => {
+        const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32' : 'xdg-open';
+        const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url];
+        execFile(command, args, (error) => error ? reject(error) : resolve());
+    });
 }
-
-function exchangeCode(code: string, verifier: string) {
-	return fetch(TOKEN_URL, {
-		method: 'POST',
-		signal: AbortSignal.timeout(30000),
-		headers: { 'content-type': 'application/x-www-form-urlencoded' },
-		body: new URLSearchParams({
-			grant_type: 'authorization_code',
-			client_id: CLIENT_ID,
-			code,
-			code_verifier: verifier,
-			redirect_uri: REDIRECT_URI,
-		}),
-	});
+function exchangeCode(code, verifier) {
+    return proxyFetch(TOKEN_URL, {
+        method: 'POST',
+        signal: AbortSignal.timeout(30000),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: CLIENT_ID,
+            code,
+            code_verifier: verifier,
+            redirect_uri: REDIRECT_URI,
+        }),
+    });
 }
-
-interface LoginPhase { phase: 'idle' | 'waiting' | 'exchanging' | 'done' | 'error'; error?: string; startedAt?: number; cancel?: () => Promise<void> }
-
-function callbackPage(error?: string) {
-	const escape = (text: string) => text.replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]!));
-	return `<!doctype html>
+function callbackPage(error) {
+    const escape = (text) => text.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${error ? '授权未完成' : '授权成功'} · DeepSeek Harness</title>
 <style>
 :root{color-scheme:light dark;--bg:#f7f8fa;--surface:#fff;--text:#1b1b1f;--muted:#737780;--line:#e9ebef;--blue:#4d6bfe;--soft:#eef2ff;--error:#c34343;--error-bg:#fff1f0}
@@ -147,251 +137,358 @@ main{flex:1;display:grid;place-items:center;padding:32px 24px 90px}.card{width:1
 <p class="footnote">${error ? '本次授权未完成，请在应用内重试。' : '授权凭证仅保存在本机。<br>返回应用后，可以关闭此页面。'}</p></section></main><footer>DeepSeek Harness · Codex 订阅连接</footer>
 <script>history.replaceState(null,'','/auth/callback');${error ? '' : 'setTimeout(()=>{location.href="dsh://open"},500);'}</script></body></html>`;
 }
-
 // ---------------------------------------------------------------------------
 // OAuth browser flow (one at a time, owned by the host process)
 // ---------------------------------------------------------------------------
-
-function runBrowserLogin(credentials: any, phase: LoginPhase) {
-	if (phase.phase === 'waiting' || phase.phase === 'exchanging') {
-		return Promise.resolve({ phase: phase.phase });
-	}
-	phase.phase = 'waiting';
-	phase.error = undefined;
-	phase.startedAt = Date.now();
-
-	return new Promise<any>((resolve) => {
-		const { verifier, challenge } = pkcePair();
-		const state = crypto.randomBytes(16).toString('hex');
-
-		const url = new URL(AUTHORIZE_URL);
-		url.searchParams.set('response_type', 'code');
-		url.searchParams.set('client_id', CLIENT_ID);
-		url.searchParams.set('redirect_uri', REDIRECT_URI);
-		url.searchParams.set('scope', SCOPE);
-		url.searchParams.set('code_challenge', challenge);
-		url.searchParams.set('code_challenge_method', 'S256');
-		url.searchParams.set('state', state);
-		url.searchParams.set('id_token_add_organizations', 'true');
-		url.searchParams.set('codex_cli_simplified_flow', 'true');
-		url.searchParams.set('originator', 'pi');
-
-		let server: http.Server | undefined;
-		let settled = false;
-
-		const finish = async (fn: () => Promise<any>) => {
-			if (settled) return;
-			settled = true;
-			phase.cancel = undefined;
-			clearTimeout(timer);
-			try { server?.close(); } catch {}
-			try {
-				const result = await fn();
-				resolve(result);
-			} catch (error) {
-				phase.phase = 'error';
-				phase.error = error instanceof Error ? error.message : String(error);
-				resolve({ phase: 'error', error: phase.error });
-			}
-		};
-
-		phase.cancel = () => finish(async () => {
-			phase.phase = 'idle';
-			phase.error = undefined;
-			return { phase: 'idle' };
-		});
-
-		const timer = setTimeout(() => {
-			finish(async () => { throw new Error('授权超时：5 分钟内未收到浏览器回调'); });
-		}, LOGIN_TIMEOUT_MS);
-
-		server = http.createServer((req, res) => {
-			const parsed = new URL(req.url ?? '/', 'http://localhost:1455');
-			if (parsed.pathname !== '/auth/callback') {
-				res.writeHead(404).end('not found');
-				return;
-			}
-			const error = parsed.searchParams.get('error');
-			const code = parsed.searchParams.get('code');
-			const returnedState = parsed.searchParams.get('state');
-			if (settled) { res.writeHead(409).end('Authorization already processing'); return; }
-			const reply = (error?: string) => res.writeHead(error ? 400 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }).end(callbackPage(error));
-			if (returnedState !== state) {
-				reply('回调参数无效（state 不匹配），请返回原授权页面重试。');
-				return;
-			}
-			if (error) {
-				const message = `授权被拒绝: ${error}`;
-				reply(message);
-				finish(async () => { throw new Error(message); });
-				return;
-			}
-			if (!code || returnedState !== state) {
-				reply('回调参数无效（code/state 不匹配），请返回原授权页面重试。');
-				return;
-			}
-			phase.phase = 'exchanging';
-			finish(async () => {
-				try {
-					const response = await exchangeCode(code, verifier);
-					const json: any = await response.json().catch(() => ({}));
-					if (!response.ok || !json.access_token || !json.refresh_token || !Number.isFinite(Number(json.expires_in)) || Number(json.expires_in) <= 0) {
-						throw new Error(`token 交换失败 (${response.status}): ${typeof json.error === 'string' ? json.error : '响应缺少有效凭证'}`);
-					}
-					const access: string = json.access_token;
-					const claims = decodeJwtPayload(access) ?? {};
-					const accountId = claims?.['https://api.openai.com/auth']?.chatgpt_account_id;
-					if (typeof accountId !== 'string' || accountId.length === 0) {
-						throw new Error('无法从 access token 中解析 accountId');
-					}
-					const payload = {
-						type: 'oauth',
-						access,
-						refresh: json.refresh_token,
-						expires: Date.now() + Number(json.expires_in ?? 0) * 1000,
-						accountId,
-					};
-					await credentials.modifyRecord(CRED_KEY, async () => ({ kind: 'grant', payload }));
-					const status = await readStatus(credentials);
-					if (!status.configured || status.expired) throw new Error('凭证写入后校验失败');
-					phase.phase = 'done';
-					reply();
-					return { phase: 'done', status };
-				} catch (error) {
-					reply(error instanceof Error ? error.message : String(error));
-					throw error;
-				}
-			});
-		});
-
-		server.on('error', (error: NodeJS.ErrnoException) => {
-			finish(async () => {
-				throw new Error(error.code === 'EADDRINUSE'
-					? '本地回调端口 1455 被占用（可能是 Codex CLI 正在登录）。请先结束占用进程后重试。'
-					: `回调服务启动失败: ${error.message}`);
-			});
-		});
-
-		server.listen(1455, '127.0.0.1', () => {
-			openBrowser(url.toString()).catch((error) => {
-				finish(async () => { throw new Error(`无法打开浏览器: ${String(error)}`); });
-			});
-		});
-	});
+function runBrowserLogin(credentials, phase) {
+    if (phase.phase === 'waiting' || phase.phase === 'exchanging') {
+        return Promise.resolve({ phase: phase.phase });
+    }
+    phase.phase = 'waiting';
+    phase.error = undefined;
+    phase.startedAt = Date.now();
+    return new Promise((resolve) => {
+        const { verifier, challenge } = pkcePair();
+        const state = crypto.randomBytes(16).toString('hex');
+        const url = new URL(AUTHORIZE_URL);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set('client_id', CLIENT_ID);
+        url.searchParams.set('redirect_uri', REDIRECT_URI);
+        url.searchParams.set('scope', SCOPE);
+        url.searchParams.set('code_challenge', challenge);
+        url.searchParams.set('code_challenge_method', 'S256');
+        url.searchParams.set('state', state);
+        url.searchParams.set('id_token_add_organizations', 'true');
+        url.searchParams.set('codex_cli_simplified_flow', 'true');
+        url.searchParams.set('originator', 'pi');
+        let server;
+        let settled = false;
+        const finish = async (fn) => {
+            if (settled)
+                return;
+            settled = true;
+            phase.cancel = undefined;
+            clearTimeout(timer);
+            try {
+                server?.close();
+            }
+            catch { }
+            try {
+                const result = await fn();
+                resolve(result);
+            }
+            catch (error) {
+                phase.phase = 'error';
+                phase.error = error instanceof Error ? error.message : String(error);
+                resolve({ phase: 'error', error: phase.error });
+            }
+        };
+        phase.cancel = () => finish(async () => {
+            phase.phase = 'idle';
+            phase.error = undefined;
+            return { phase: 'idle' };
+        });
+        const timer = setTimeout(() => {
+            finish(async () => { throw new Error('授权超时：5 分钟内未收到浏览器回调'); });
+        }, LOGIN_TIMEOUT_MS);
+        server = http.createServer((req, res) => {
+            const parsed = new URL(req.url ?? '/', 'http://localhost:1455');
+            if (parsed.pathname !== '/auth/callback') {
+                res.writeHead(404).end('not found');
+                return;
+            }
+            const error = parsed.searchParams.get('error');
+            const code = parsed.searchParams.get('code');
+            const returnedState = parsed.searchParams.get('state');
+            if (settled) {
+                res.writeHead(409).end('Authorization already processing');
+                return;
+            }
+            const reply = (error) => res.writeHead(error ? 400 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }).end(callbackPage(error));
+            if (returnedState !== state) {
+                reply('回调参数无效（state 不匹配），请返回原授权页面重试。');
+                return;
+            }
+            if (error) {
+                const message = `授权被拒绝: ${error}`;
+                reply(message);
+                finish(async () => { throw new Error(message); });
+                return;
+            }
+            if (!code || returnedState !== state) {
+                reply('回调参数无效（code/state 不匹配），请返回原授权页面重试。');
+                return;
+            }
+            phase.phase = 'exchanging';
+            finish(async () => {
+                try {
+                    const response = await exchangeCode(code, verifier);
+                    const json = await response.json().catch(() => ({}));
+                    if (!response.ok || !json.access_token || !json.refresh_token || !Number.isFinite(Number(json.expires_in)) || Number(json.expires_in) <= 0) {
+                        throw new Error(`token 交换失败 (${response.status}): ${typeof json.error === 'string' ? json.error : '响应缺少有效凭证'}`);
+                    }
+                    const access = json.access_token;
+                    const claims = decodeJwtPayload(access) ?? {};
+                    const accountId = claims?.['https://api.openai.com/auth']?.chatgpt_account_id;
+                    if (typeof accountId !== 'string' || accountId.length === 0) {
+                        throw new Error('无法从 access token 中解析 accountId');
+                    }
+                    const payload = {
+                        type: 'oauth',
+                        access,
+                        refresh: json.refresh_token,
+                        expires: Date.now() + Number(json.expires_in ?? 0) * 1000,
+                        accountId,
+                    };
+                    await credentials.modifyRecord(CRED_KEY, async () => ({ kind: 'grant', payload }));
+                    const status = await readStatus(credentials);
+                    if (!status.configured || status.expired)
+                        throw new Error('凭证写入后校验失败');
+                    phase.phase = 'done';
+                    reply();
+                    return { phase: 'done', status };
+                }
+                catch (error) {
+                    reply(error instanceof Error ? error.message : String(error));
+                    throw error;
+                }
+            });
+        });
+        server.on('error', (error) => {
+            finish(async () => {
+                throw new Error(error.code === 'EADDRINUSE'
+                    ? '本地回调端口 1455 被占用（可能是 Codex CLI 正在登录）。请先结束占用进程后重试。'
+                    : `回调服务启动失败: ${error.message}`);
+            });
+        });
+        server.listen(1455, '127.0.0.1', () => {
+            openBrowser(url.toString()).catch((error) => {
+                finish(async () => { throw new Error(`无法打开浏览器: ${String(error)}`); });
+            });
+        });
+    });
 }
-
 // ---------------------------------------------------------------------------
 // loopback RPC channel (same shape as dsh-balance-panel)
 // ---------------------------------------------------------------------------
-
-function rpcFailure(rpcId: string, code: string, message: string) {
-	return { type: 'server-response', rpcId, result: { ok: false, error: { code, message, details: {} } } };
+function rpcFailure(rpcId, code, message) {
+    return { type: 'server-response', rpcId, result: { ok: false, error: { code, message, details: {} } } };
 }
-
+// Output limits are verified for these exact IDs, not inferred from aliases.
+// Source for each: https://developers.openai.com/api/docs/models/<id>.md
+// The documented 1,050,000 context is intentionally configured as 1,000,000.
+// Spark's official limits are unverified: apply the approved GPT context policy,
+// but leave its existing output limit (including catalog defaults) untouched.
+const VERIFIED_MAX_TOKENS = Object.freeze({
+    'gpt-5.5': 128000,
+    'gpt-5.6-luna': 128000,
+    'gpt-5.6-sol': 128000,
+    'gpt-5.6-terra': 128000,
+    'gpt-6-astra': 128000,
+    'gpt-6-luna': 128000,
+    'gpt-6-sol': 128000,
+    'gpt-6.1-sol': 128000,
+});
+function withApprovedModelLimits(model, id = model.id) {
+    if (typeof id !== 'string' || !id.startsWith('gpt-'))
+        return model;
+    const maxTokens = VERIFIED_MAX_TOKENS[id];
+    if (model.contextWindow === 1000000 && (maxTokens === undefined || model.maxTokens === maxTokens))
+        return model;
+    return { ...model, contextWindow: 1000000, ...(maxTokens === undefined ? {} : { maxTokens }) };
+}
 // Activate the installed catalog route through the host settings service.
-// Never replace existing provider options or hardcode a model catalog.
-async function ensureCodexModels(ctx: any) {
-	const provider = 'openai-codex';
-	try {
-		if (!ctx.llm || !ctx.settings) throw new Error('模型或设置服务尚未就绪，请稍后刷新');
-		const entry = (await ctx.llm.listConfigurableProviders()).find((row: any) => row.provider === provider);
-		if (!entry) throw new Error('当前宿主未安装 Codex 模型目录，请检查 llm-pi-ai 插件');
-		const document = (await ctx.settings.describe()).find((row: any) => row.ns === entry.settingsNs);
-		if (!document) throw new Error('无法读取 Codex 提供商配置');
-		const current = entry.settingsPath.reduce((value: any, key: string) => value?.[key], document.value);
-		if (current === undefined) {
-			await ctx.settings.mutate(entry.settingsNs, [{ op: 'set', path: entry.settingsPath, value: { displayName: 'Codex (ChatGPT)' } }], document.revision);
-		}
-		const models = await ctx.llm.listModels(provider);
-		if (!models.length) throw new Error('Codex 模型目录为空，请检查提供商配置后刷新');
-		return { ready: true, count: models.length };
-	} catch (error) {
-		return { ready: false, error: error instanceof Error ? error.message : String(error) };
-	}
+// Fixed groups retain membership/order; catalog mode uses sparse ID overrides.
+async function ensureCodexModels(ctx) {
+    const provider = 'openai-codex';
+    try {
+        if (!ctx.llm || !ctx.settings)
+            throw new Error('模型或设置服务尚未就绪，请稍后刷新');
+        const entry = (await ctx.llm.listConfigurableProviders()).find((row) => row.provider === provider);
+        if (!entry)
+            throw new Error('当前宿主未安装 Codex 模型目录，请检查 llm-pi-ai 插件');
+        const readDocument = async () => {
+            const document = (await ctx.settings.describe()).find((row) => row.ns === entry.settingsNs);
+            if (!document)
+                throw new Error('无法读取 Codex 提供商配置');
+            return document;
+        };
+        const readProvider = (document) => entry.settingsPath.reduce((value, key) => value?.[key], document.value);
+        let document = await readDocument();
+        if (readProvider(document) === undefined) {
+            await ctx.settings.mutate(entry.settingsNs, [{ op: 'set', path: entry.settingsPath, value: { displayName: 'Codex (ChatGPT)' } }], document.revision);
+        }
+        const models = await ctx.llm.listModels(provider);
+        if (!models.length)
+            throw new Error('Codex 模型目录为空，请检查提供商配置后刷新');
+        // Activation and catalog refresh can advance the revision. Never write
+        // limits using the stale pre-activation snapshot or discard newer options.
+        document = await readDocument();
+        const current = readProvider(document);
+        if (!current)
+            throw new Error('无法读取 Codex 提供商配置');
+        let next = current;
+        if (Array.isArray(current.models) && current.models.length > 0) {
+            const fixed = current.models.map((model) => withApprovedModelLimits(model));
+            if (fixed.some((model, i) => model !== current.models[i]))
+                next = { ...current, models: fixed };
+        }
+        else {
+            const overrides = { ...current.modelOverrides };
+            let changed = false;
+            for (const model of models) {
+                if (typeof model.id !== 'string' || !model.id.startsWith('gpt-'))
+                    continue;
+                const previous = overrides[model.id] ?? {};
+                const approved = withApprovedModelLimits(previous, model.id);
+                if (approved !== previous) {
+                    overrides[model.id] = approved;
+                    changed = true;
+                }
+            }
+            if (changed)
+                next = { ...current, modelOverrides: overrides };
+        }
+        if (next !== current)
+            await ctx.settings.mutate(entry.settingsNs, [{ op: 'set', path: entry.settingsPath, value: next }], document.revision);
+        return { ready: true, count: models.length };
+    }
+    catch (error) {
+        return { ready: false, error: error instanceof Error ? error.message : String(error) };
+    }
 }
+function registerCodexAuthRpc(ctx, credentials, phase) {
+    let modelSync;
+    const statusWithModels = async () => {
+        const status = await readStatus(credentials);
+        if (!status.configured || status.expired)
+            return status;
+        modelSync ?? (modelSync = ensureCodexModels(ctx).finally(() => { modelSync = undefined; }));
+        return { ...status, models: await modelSync };
+    };
+    const route = {
+        kind: 'prefix',
+        path: RPC_CHANNEL,
+        handler: async (req, res) => {
+            const rejection = typeof ctx.connection?.requestRejection === 'function' ? ctx.connection.requestRejection(req) : undefined;
+            if (rejection !== undefined) {
+                res.writeHead(rejection);
+                res.end(rejection === 401 ? 'unauthorized' : 'forbidden');
+                return;
+            }
+            const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname;
+            if (!pathname.startsWith(`${RPC_CHANNEL}/`)) {
+                res.writeHead(404).end('not found');
+                return;
+            }
+            const endpoint = pathname.slice(RPC_CHANNEL.length + 1);
+            if (req.method !== 'POST' || !/^[A-Za-z0-9_$.-]+$/.test(endpoint)) {
+                res.writeHead(404).end('not found');
+                return;
+            }
+            let message = null;
+            try {
+                const chunks = [];
+                for await (const chunk of req)
+                    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                const text = Buffer.concat(chunks).toString('utf8');
+                message = text ? JSON.parse(text) : null;
+            }
+            catch (error) {
+                res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure('invalid-request', 'gateway/bad-request', String(error))));
+                return;
+            }
+            const rpcId = typeof message?.rpcId === 'string' ? message.rpcId : 'invalid-request';
+            if (message?.type !== 'client-request' || typeof message.method !== 'string' || message.method !== endpoint) {
+                res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/bad-request', 'invalid client-request message')));
+                return;
+            }
+            try {
+                let result;
+                if (endpoint === 'status') {
+                    result = { status: await statusWithModels(), login: { phase: phase.phase, error: phase.error } };
+                }
+                else if (endpoint === 'login') {
+                    void runBrowserLogin(credentials, phase);
+                    result = { phase: phase.phase };
+                    if (result.phase === 'done')
+                        result.status = await readStatus(credentials);
+                    result.login = { phase: phase.phase, error: phase.error };
+                }
+                else if (endpoint === 'cancel') {
+                    if (phase.phase === 'exchanging')
+                        throw new Error('正在保存授权，请稍候');
+                    await phase.cancel?.();
+                    result = { status: await readStatus(credentials), login: { phase: phase.phase, error: phase.error } };
+                }
+                else if (endpoint === 'logout') {
+                    if (phase.phase === 'waiting' || phase.phase === 'exchanging')
+                        throw new Error('授权进行中，请完成后再取消授权');
+                    await credentials.deleteRecord(CRED_KEY);
+                    phase.phase = 'idle';
+                    phase.error = undefined;
+                    result = { status: await statusWithModels(), login: { phase: phase.phase } };
+                }
+                else {
+                    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/no-endpoint', `unknown endpoint ${endpoint}`)));
+                    return;
+                }
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ type: 'server-response', rpcId, result: { ok: true, value: result } }));
+            }
+            catch (error) {
+                res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/handler', error instanceof Error ? error.message : String(error))));
+            }
+        }
+    };
+    ctx.effect(() => ctx.webServer.register(route), 'dsh-codex-auth: rpc channel');
+}
+// ---------------------------------------------------------------------------
+// silent token refresh (runs once per app start; no timers)
+// ---------------------------------------------------------------------------
 
-function registerCodexAuthRpc(ctx: any, credentials: any, phase: LoginPhase) {
-	let modelSync: Promise<any> | undefined;
-	const statusWithModels = async () => {
-		const status = await readStatus(credentials);
-		if (!status.configured || status.expired) return status;
-		modelSync ??= ensureCodexModels(ctx).finally(() => { modelSync = undefined; });
-		return { ...status, models: await modelSync };
-	};
-	const route = {
-		kind: 'prefix' as const,
-		path: RPC_CHANNEL,
-		handler: async (req: any, res: any) => {
-			const rejection = typeof ctx.connection?.requestRejection === 'function' ? ctx.connection.requestRejection(req) : undefined;
-			if (rejection !== undefined) {
-				res.writeHead(rejection);
-				res.end(rejection === 401 ? 'unauthorized' : 'forbidden');
-				return;
-			}
-			const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname;
-			if (!pathname.startsWith(`${RPC_CHANNEL}/`)) {
-				res.writeHead(404).end('not found');
-				return;
-			}
-			const endpoint = pathname.slice(RPC_CHANNEL.length + 1);
-			if (req.method !== 'POST' || !/^[A-Za-z0-9_$.-]+$/.test(endpoint)) {
-				res.writeHead(404).end('not found');
-				return;
-			}
-			let message: any = null;
-			try {
-				const chunks: Buffer[] = [];
-				for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-				const text = Buffer.concat(chunks).toString('utf8');
-				message = text ? JSON.parse(text) : null;
-			} catch (error) {
-				res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure('invalid-request', 'gateway/bad-request', String(error))));
-				return;
-			}
-			const rpcId = typeof message?.rpcId === 'string' ? message.rpcId : 'invalid-request';
-			if (message?.type !== 'client-request' || typeof message.method !== 'string' || message.method !== endpoint) {
-				res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/bad-request', 'invalid client-request message')));
-				return;
-			}
-			try {
-				let result: any;
-				if (endpoint === 'status') {
-					result = { status: await statusWithModels(), login: { phase: phase.phase, error: phase.error } };
-				} else if (endpoint === 'login') {
-					void runBrowserLogin(credentials, phase);
-					result = { phase: phase.phase };
-					if (result.phase === 'done') result.status = await readStatus(credentials);
-					result.login = { phase: phase.phase, error: phase.error };
-				} else if (endpoint === 'cancel') {
-					if (phase.phase === 'exchanging') throw new Error('正在保存授权，请稍候');
-					await phase.cancel?.();
-					result = { status: await readStatus(credentials), login: { phase: phase.phase, error: phase.error } };
-				} else if (endpoint === 'logout') {
-					if (phase.phase === 'waiting' || phase.phase === 'exchanging') throw new Error('授权进行中，请完成后再取消授权');
-					await credentials.deleteRecord(CRED_KEY);
-					phase.phase = 'idle';
-					phase.error = undefined;
-					result = { status: await statusWithModels(), login: { phase: phase.phase } };
-				} else {
-					res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/no-endpoint', `unknown endpoint ${endpoint}`)));
-					return;
-				}
-				res.writeHead(200, { 'content-type': 'application/json' });
-				res.end(JSON.stringify({ type: 'server-response', rpcId, result: { ok: true, value: result } }));
-			} catch (error) {
-				res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(rpcFailure(rpcId, 'gateway/handler', error instanceof Error ? error.message : String(error))));
-			}
-		}
-	};
-	ctx.effect(() => ctx.webServer.register(route), 'dsh-codex-auth: rpc channel');
+async function silentRefresh(credentials) {
+    try {
+        const record = await credentials.readRecord(CRED_KEY);
+        const payload = record && record.kind === 'grant' ? record.payload : undefined;
+        if (!payload || payload.type !== 'oauth' || !payload.refresh)
+            return;
+        const res = await proxyFetch(TOKEN_URL, {
+            method: 'POST',
+            signal: AbortSignal.timeout(30000),
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                client_id: CLIENT_ID,
+                refresh_token: payload.refresh,
+            }),
+        });
+        if (!res.ok)
+            return; // keep the old grant; user can re-authorize if it expires
+        const json = await res.json().catch(() => undefined);
+        if (!json || typeof json.access_token !== 'string' || json.access_token.length === 0)
+            return;
+        const next = {
+            ...payload,
+            access: json.access_token,
+            refresh: typeof json.refresh_token === 'string' && json.refresh_token.length > 0 ? json.refresh_token : payload.refresh,
+            expires: Date.now() + Number(json.expires_in ?? 0) * 1000,
+        };
+        if (!(next.expires > Date.now()))
+            return;
+        await credentials.modifyRecord(CRED_KEY, async () => ({ kind: 'grant', payload: next }));
+    }
+    catch {
+        // silent: keep the old grant on any failure
+    }
 }
 
 // ---------------------------------------------------------------------------
 // plugin entry
 // ---------------------------------------------------------------------------
-
-export function apply(ctx: any, _config: Record<string, any> = {}) {
-	const credentials = ctx.credentials;
-	const phase: LoginPhase = { phase: 'idle' };
-	registerCodexAuthRpc(ctx, credentials, phase);
+export function apply(ctx, _config = {}) {
+    const credentials = ctx.credentials;
+    const phase = { phase: 'idle' };
+    registerCodexAuthRpc(ctx, credentials, phase);
+    void silentRefresh(credentials);
 }

@@ -5,10 +5,21 @@ import { Readable } from 'node:stream';
 import vm from 'node:vm';
 
 const hostSource = (await readFile(new URL('../lib/index.js', import.meta.url), 'utf8'))
+ .replace("import { proxyFetch } from './proxy-fetch.mjs';", 'const proxyFetch = () => { throw new Error("network forbidden in RPC tests"); };')
  .replace("import z from './vendor/schemastery.mjs';", 'const z = {object: () => ({i18n: () => ({})})};')
  + '\nexport { registerCodexAuthRpc, callbackPage, ensureCodexModels };';
 const host = await import(`data:text/javascript;base64,${Buffer.from(hostSource).toString('base64')}`);
 const clientSource = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+
+function loadClient() {
+ let registered;
+ const react = {
+  createElement:(type,props,...children)=>({type,props:props||{},children}),
+  useReducer:()=>[0,()=>{}], useEffect:()=>{}, useState:initial=>[initial,()=>{}], useCallback:fn=>fn
+ };
+ vm.runInNewContext(clientSource,{window:{__ModuleLoader__:{load:mod=>{registered=mod.factory(()=>react);}}},setTimeout,clearTimeout});
+ return registered;
+}
 
 function setup() {
  let route, registered, card, broken = false;
@@ -44,6 +55,19 @@ function setup() {
  return {phase,timers,setRecord:value=>{record=value;},setBroken:value=>{broken=value;},
   call:(...args)=>card.props.call(...args),render:()=>card.type(card.props)};
 }
+test('two apply instances of one client module do not share authorization stores',async()=>{
+ const client=loadClient();
+ function instance(email){
+  let card;
+  client.apply({connection:{rpc:{call:async()=>({ok:true,value:{status:{configured:true,email,expires:Date.now()+3600000},login:{phase:'done'}}})}},effect:()=>{},locale:{bind:()=>key=>key},slots:{inject:(_name,fn)=>fn(),register:(spec,render)=>{if(spec.id==='codex-subscription')card=render();}}});
+  return {refresh:()=>card.props.call('status',null),render:()=>JSON.stringify(card.type(card.props))};
+ }
+ const a=instance('fake-a@example.invalid'),b=instance('fake-b@example.invalid');
+ await a.refresh();await b.refresh();
+ assert.match(a.render(),/fake-a@example.invalid/);assert.doesNotMatch(a.render(),/fake-b@example.invalid/);
+ assert.match(b.render(),/fake-b@example.invalid/);
+});
+
 const flatten = tree => [tree,...(tree?.children||[]).flatMap(x=>x&&typeof x==='object'?flatten(x):[])];
 const text = tree => JSON.stringify(tree);
 
